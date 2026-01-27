@@ -1,5 +1,6 @@
 package newint.aggregator.core;
 
+import java.time.Duration;
 import java.time.Instant;
 
 import jakarta.enterprise.context.ApplicationScoped;
@@ -7,64 +8,75 @@ import jakarta.enterprise.inject.Produces;
 
 import newint.aggregator.shared.Aggregation;
 import newint.aggregator.shared.Store;
-import newint.aggregator.shared.TemperatureMeasurement;
+import newint.aggregator.shared.Transaction;
+import newint.producer.ValuesGenerator;
+import org.apache.kafka.common.serialization.Serde;
 import org.apache.kafka.common.serialization.Serdes;
 import org.apache.kafka.streams.StreamsBuilder;
 import org.apache.kafka.streams.Topology;
-import org.apache.kafka.streams.kstream.Consumed;
-import org.apache.kafka.streams.kstream.GlobalKTable;
-import org.apache.kafka.streams.kstream.Materialized;
-import org.apache.kafka.streams.kstream.Produced;
-import org.apache.kafka.streams.state.KeyValueBytesStoreSupplier;
+import org.apache.kafka.streams.kstream.*;
 import org.apache.kafka.streams.state.Stores;
 
 import io.quarkus.kafka.client.serialization.ObjectMapperSerde;
+import org.jboss.logging.Logger;
 
 @ApplicationScoped
 public class TopologyProducer {
 
-    static final String VMART_STORE = "vmart-store";
+  static final String VMART_STORE = "vmart-store";
 
-    static final String STORE_TOPIC = "store";
-    static final String ORDER_TOPIC = "order";
-    static final String ORDER_AGGREGATED_TOPIC = "order-aggregated";
+  static final String STORE_TOPIC = "store";
+  static final String ORDER_TOPIC = "order";
+  static final String ORDER_AGGREGATED_TOPIC = "order-aggregated";
 
-    @Produces
-    public Topology buildTopology() {
-        StreamsBuilder builder = new StreamsBuilder();
+  private static final Logger LOG = Logger.getLogger(TopologyProducer.class);
 
-        ObjectMapperSerde<Store> weatherStationSerde = new ObjectMapperSerde<>(Store.class);
-        ObjectMapperSerde<Aggregation> aggregationSerde = new ObjectMapperSerde<>(Aggregation.class);
+  @Produces
+  public Topology buildTopology() {
+    StreamsBuilder builder = new StreamsBuilder();
 
-        KeyValueBytesStoreSupplier storeSupplier = Stores.persistentKeyValueStore(VMART_STORE);
+    ObjectMapperSerde<Store> weatherStationSerde = new ObjectMapperSerde<>(Store.class);
+    ObjectMapperSerde<Aggregation> aggregationSerde = new ObjectMapperSerde<>(Aggregation.class);
+    ObjectMapperSerde<Transaction> transactionSerde = new ObjectMapperSerde<>(Transaction.class);
 
-        GlobalKTable<Integer, Store> stations = builder.globalTable(
-                STORE_TOPIC,
-                Consumed.with(Serdes.Integer(), weatherStationSerde));
+    Serde<Windowed<Integer>> timeWindowedSerde =
+      WindowedSerdes.timeWindowedSerdeFrom(Integer.class, 500L);
 
-        builder.stream(
-                ORDER_TOPIC,
-                Consumed.with(Serdes.Integer(), Serdes.String()))
-                .join(
-                        stations,
-                        (stationId, timestampAndValue) -> stationId,
-                        (timestampAndValue, station) -> {
-                            String[] parts = timestampAndValue.split(";");
-                            return new TemperatureMeasurement(station.id, station.name, Instant.parse(parts[0]),
-                                    Double.valueOf(parts[1]));
-                        })
-                .groupByKey()
-                .aggregate(
-                        Aggregation::new,
-                        (stationId, value, aggregation) -> aggregation.updateFrom(value),
-                        Materialized.<Integer, Aggregation> as(storeSupplier)
-                                .withKeySerde(Serdes.Integer())
-                                .withValueSerde(aggregationSerde))
-                .toStream()
-                .to(
-                        ORDER_AGGREGATED_TOPIC,
-                        Produced.with(Serdes.Integer(), aggregationSerde));
+    var storeSupplier = Stores.inMemoryWindowStore(
+      VMART_STORE,
+      Duration.ofMinutes(3),
+      Duration.ofMinutes(1),
+      false);
 
-        return builder.build();
-    }
+    GlobalKTable<Integer, Store> stores = builder.globalTable(
+      STORE_TOPIC,
+      Consumed.with(Serdes.Integer(), weatherStationSerde));
+
+    var enrichedTransactions = builder.stream(
+      ORDER_TOPIC,
+      Consumed.with(Serdes.Integer(), Serdes.String())
+    ).join(
+      stores,
+      (stationId, timestamp) -> stationId,
+      (timestampAndValue, station) -> {
+        String[] parts = timestampAndValue.split(";");
+        return new Transaction(station.id, station.name, Instant.parse(parts[0]),
+          Double.parseDouble(parts[1]));
+      });
+
+      enrichedTransactions
+      .groupBy((key, value) -> key, Grouped.with(Serdes.Integer(), transactionSerde))
+      .windowedBy(TimeWindows.ofSizeWithNoGrace(Duration.ofMinutes(1)))
+      .aggregate(
+        Aggregation::new,
+        (stationId, value, aggregation) -> aggregation.updateFrom(value),
+        Materialized.<Integer, Aggregation> as(storeSupplier)
+          .withKeySerde(Serdes.Integer())
+          .withValueSerde(aggregationSerde))
+      .toStream()
+        .peek((key, value) -> System.out.println(String.format("storeId: %d, avg: %.2f", value.stationId, value.avg)));
+//      .to(ORDER_AGGREGATED_TOPIC);
+
+    return builder.build();
+  }
 }
