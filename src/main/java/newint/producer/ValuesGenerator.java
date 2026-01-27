@@ -9,11 +9,13 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Random;
 
+import io.smallrye.reactive.messaging.kafka.api.OutgoingKafkaRecordMetadata;
 import jakarta.enterprise.context.ApplicationScoped;
 
 import io.smallrye.mutiny.Multi;
 import io.smallrye.reactive.messaging.kafka.Record;
 import newint.aggregator.shared.Store;
+import org.eclipse.microprofile.reactive.messaging.Message;
 import org.eclipse.microprofile.reactive.messaging.Outgoing;
 import org.jboss.logging.Logger;
 
@@ -39,7 +41,11 @@ public class ValuesGenerator {
                             .setScale(1, RoundingMode.HALF_UP)
                             .doubleValue();
 
-                    LOG.infov("store: {0}, orderTotal: {1}", store.name, orderTotal);
+                    //LOG.infov("store: {0}, orderTotal: {1}", store.name, orderTotal);
+//                    Message.of(Instant.now() + ";" + orderTotal)
+//                      .addMetadata(OutgoingKafkaRecordMetadata.<String>builder()
+//                        .withKey(String.valueOf(store.id))
+//                        .build());
                     return Record.of(store.id, Instant.now() + ";" + orderTotal);
                 });
     }
