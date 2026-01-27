@@ -1,5 +1,7 @@
 package newint.aggregator.core;
 
+import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -8,15 +10,13 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 
 import newint.aggregator.shared.Aggregation;
-import newint.aggregator.shared.WeatherStationData;
+import newint.aggregator.shared.StoreData;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.Serdes;
-import org.apache.kafka.streams.KafkaStreams;
-import org.apache.kafka.streams.KeyQueryMetadata;
-import org.apache.kafka.streams.StoreQueryParameters;
+import org.apache.kafka.streams.*;
 import org.apache.kafka.streams.errors.InvalidStateStoreException;
-import org.apache.kafka.streams.state.QueryableStoreTypes;
-import org.apache.kafka.streams.state.ReadOnlyKeyValueStore;
+import org.apache.kafka.streams.kstream.Windowed;
+import org.apache.kafka.streams.state.*;
 import org.jboss.logging.Logger;
 
 @ApplicationScoped
@@ -39,11 +39,43 @@ public class InteractiveQueries {
                 .collect(Collectors.toList());
     }
 
+    public void test() {
+        var windowStore =
+          streams.store(StoreQueryParameters.fromNameAndType(
+            "vmart-store",
+            QueryableStoreTypes.timestampedWindowStore()
+          ));
+
+        Instant timeFrom = Instant.ofEpochMilli(0); // beginning of time = oldest available
+        Instant timeTo = Instant.now(); // now (in processing-time)
+        try(WindowStoreIterator<ValueAndTimestamp<Object>> iterator = windowStore.fetch(1, timeFrom, timeTo)) {
+            while (iterator.hasNext()) {
+                KeyValue<Long, ValueAndTimestamp<Object>> next = iterator.next();
+                Long windowTimestamp = next.key;
+                LOG.infov("Count of 'world' @ time " + windowTimestamp + " is " + next.value);
+            }
+        }
+
+
+// Fetch values for the key "world" for all of the windows available in this application instance.
+// To get *all* available windows we fetch windows from the beginning of time until now.
+//        Instant timeFrom = Instant.ofEpochMilli(0); // beginning of time = oldest available
+//        Instant timeTo = Instant.now(); // now (in processing-time)
+//        WindowStoreIterator<Long> iterator = windowStore.fetch("world", timeFrom, timeTo);
+//        while (iterator.hasNext()) {
+//            KeyValue<Long, Long> next = iterator.next();
+//            long windowTimestamp = next.key;
+//            System.out.println("Count of 'world' @ time " + windowTimestamp + " is " + next.value);
+//        }
+    }
+
     public GetWeatherStationDataResult getWeatherStationData(int id) {
+        test();
+
         KeyQueryMetadata metadata = streams.queryMetadataForKey(
-                TopologyProducer.VMART_STORE,
-                id,
-                Serdes.Integer().serializer());
+                          TopologyProducer.VMART_STORE,
+                          id,
+                          Serdes.Integer().serializer());
 
         if (metadata == null || metadata == KeyQueryMetadata.NOT_AVAILABLE) {
             LOG.warnv("Found no metadata for key {0}", id);
@@ -53,7 +85,7 @@ public class InteractiveQueries {
             Aggregation result = getWeatherStationStore().get(id);
 
             if (result != null) {
-                return GetWeatherStationDataResult.found(WeatherStationData.from(result));
+                return GetWeatherStationDataResult.found(StoreData.from(result));
             } else {
                 return GetWeatherStationDataResult.notFound();
             }
