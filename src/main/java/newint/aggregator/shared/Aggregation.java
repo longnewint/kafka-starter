@@ -16,7 +16,7 @@ public class Aggregation {
     public double sum;
     public double avg;
 
-    public Aggregation updateFrom(TemperatureMeasurement measurement) {
+    public Aggregation updateFrom(Transaction measurement) {
         stationId = measurement.stationId;
         stationName = measurement.stationName;
 
