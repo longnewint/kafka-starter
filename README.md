@@ -1,7 +1,4 @@
 # kafka-starter
-as'df
-ajkshdfkh
-asfd
 
 This project uses Quarkus, the Supersonic Subatomic Java Framework.
 
